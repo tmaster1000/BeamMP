@@ -115,7 +115,10 @@ local remoteData = {
 local smoothVel = vec3(0,0,0)
 local smoothRvel = vec3(0,0,0)
 
-local physHandlerAdded = false
+local physcounter = 0
+local physstart = 0
+local physmult = 1
+local gfxAcc = 0
 
 local debugDrawer = obj.debugDrawProxy
 -- ============= VARIABLES =============
@@ -134,11 +137,11 @@ end
 -- Limit vector length
 local function limitVecLength(vec, length)
 	local vecLength = vec:length()
-	
+
 	if vecLength > length then
 		return vec*(length/vecLength)
 	end
-	
+
 	return vec
 end
 
@@ -165,7 +168,7 @@ local function onReset()
 	remoteRaccSmoother:reset()
 	accErrorSmoother:reset()
 	raccErrorSmoother:reset()
-	
+
 	lastVehVel = nil
 	lastVehRvel = nil
 
@@ -178,12 +181,12 @@ local function onReset()
 	remoteData.racc = vec3(0,0,0)
 	remoteData.timer = 0
 	framesSinceReset = 0
+	gfxAcc = 0
 end
 
-local physcounter = 0
-local physstart = 0
 
-local physmult = 1
+
+
 
 local function update(dtSim)
 	if physcounter == 0 then
@@ -205,19 +208,21 @@ local function update(dtSim)
 	-- Smooth vehicle velocity to prevent vibrating
 	smoothVel = localVelSmoother:get(vec3(obj:getVelocity()), dtSim)
 	smoothRvel = localRvelSmoother:get(vec3(obj:getPitchAngularVelocity(), obj:getRollAngularVelocity(), obj:getYawAngularVelocity()), dtSim)
-end
 
 
-
-local function updateGFX(dt)
-	dt = dt * (remoteData.localSimspeed or 1)
-	timer = timer + dt
-	lastDT = dt
-	framesSinceReset = framesSinceReset + 1
+  gfxAcc = gfxAcc + dtSim
+  if gfxAcc >= 1/200 then
+      print("here")
+    --call the old updateGFX logic with the accumulated dt
+    local dt = gfxAcc * (remoteData.localSimspeed or 1)
+    gfxAcc = gfxAcc - 1/200
+    timer = timer + dt
+    lastDT = dt
+    framesSinceReset = framesSinceReset + 1
 
 	-- If there is no received data, or data is older than timeout, do nothing
 	if not remoteData.pos or (timer-remoteData.recTime) > packetTimeout then return end
-	
+
 	-- Since the line above returns end if there is no remote data we know this vehicle should be remote if this runs
 	if v.mpVehicleType == "L" then v.mpVehicleType = "R" end
 
@@ -225,7 +230,7 @@ local function updateGFX(dt)
 	local vehRot = quatFromDir(-vec3(obj:getDirectionVector()), vec3(obj:getDirectionVectorUp()))
 	local vehRvel = smoothRvel:rotated(vehRot)
 	local vehRacc = vehRvel-(lastVehRvel or vehRvel)
-	
+
 	local cog = velocityVE.cogRel:rotated(vehRot)
 	local vehPos = vec3(obj:getPosition()) + cog
 	local vehVel = smoothVel + cog:cross(vehRvel)
@@ -277,23 +282,23 @@ local function updateGFX(dt)
 	local rotErrorQuat = vehRot:inversed() * rot
 	local rotError = rotErrorQuat:toEulerYXZ()
 	rotError = vec3(rotError.y, rotError.z, rotError.x)
-	
+
 	-- Calculate teleport thresholds
 	local maxVel = tpVelSmoother:get(max(vel:length(), vehVel:length()), dt)
 	local tpDist1 = tpDistAdd + maxVel*tpDistMul1
 	local tpDist2 = tpDistAdd + maxVel*tpDistMul2
-	
+
 	-- Debug for teleport distances
 	--debugDrawer:drawSphere(tpDist1, vehPos:toFloat3(), color(0,0,255,50))
 	--debugDrawer:drawSphere(tpDist2, vehPos:toFloat3(), color(255,0,0,50))
-	
+
 	local maxRvel = tpRvelSmoother:get(max(rvel:length(), vehRvel:length()), dt)
 	local tpRot1 = tpRotAdd + maxRvel*tpRotMul1
 	local tpRot2 = tpRotAdd + maxRvel*tpRotMul2
-	
+
 	local posErrorLen = posError:length()
 	local rotErrorLen = rotError:length()
-	
+
 	if posErrorLen > tpDist1 or rotErrorLen > tpRot1 then
 		tpTimer = tpTimer + dt
 	else
@@ -301,8 +306,8 @@ local function updateGFX(dt)
 	end
 
 	-- If instant teleport distance or teleport timer exceeded, teleport
-	if framesSinceReset > 5 then -- wating 6 frames then always teleporting the 6th frame makes reseting/recovering a remote vehicle at speed teleport much more consistent, maybe the smoothers catching up?
-		if framesSinceReset == 6 or tpTimer > (tpDelayAdd + abs(predictTime)) or posErrorLen > tpDist2 or rotErrorLen > tpRot2 then
+	if framesSinceReset > 50 then -- wating 6 frames then always teleporting the 6th frame makes reseting/recovering a remote vehicle at speed teleport much more consistent, maybe the smoothers catching up?
+		if framesSinceReset == 51 or tpTimer > (tpDelayAdd + abs(predictTime)) or posErrorLen > tpDist2 or rotErrorLen > tpRot2 then
 			local predictTime = predictTime + dt -- add one frame so postion is correct when arriving in GE
 			-- Use received position, and smoothed velocity and acceleration to predict vehicle position
 			local pos = remoteData.pos + remoteVel*predictTime + 0.5*remoteAcc*predictTime*predictTime
@@ -313,29 +318,29 @@ local function updateGFX(dt)
 			local tpPos = pos - velocityVE.cogRel:rotated(rot)
 
 			local noCounterVelocity = 0
-			if framesSinceReset == 6 then
+			if framesSinceReset == 51 then
 				noCounterVelocity = 1 -- logs on the t series count as not attached so they would fly backwards on spawn, this disables the counter velocity preventing that
 			end
 			local posData = {pos = tpPos, vel = vel, vehVel = vehVel, rot = rot,rvel = rvel , noCounter = noCounterVelocity}
-			
+
 			obj:queueGameEngineLua("positionGE.setPositionRotationVelocity("..obj:getID()..","..serialize(posData)..")")
-	
+
 			remoteVelSmoother:set(remoteData.vel)
 			remoteRvelSmoother:set(remoteData.rvel)
-	
+
 			remoteData.acc = vec3(0,0,0)
 			remoteData.racc = vec3(0,0,0)
 			remoteAccSmoother:reset()
 			remoteRaccSmoother:reset()
-	
+
 			lastAcc = nil
-	
+
 			accErrorSmoother:reset()
 			raccErrorSmoother:reset()
-	
-			return
-		end
-	end
+           -- lastRacc = nil why is this not done?
+
+            return
+        end
 
 	local velError = vel - vehVel
 	local accError = accErrorSmoother:get((lastAcc or vehAcc) - vehAcc, dt)
@@ -358,16 +363,19 @@ local function updateGFX(dt)
 
 	--print("targetAcc: "..targetAcc:length())
 	--print("targetRacc: "..targetRacc:length())
-	if framesSinceReset > 5 then
+	--if framesSinceReset > 200 why is this checked twice?
 		if targetRacc:length() > minRotForce or vehVel:length() > 1 then
 			velocityVE.addAngularVelocity(targetAcc.x, targetAcc.y, targetAcc.z, targetRacc.x, targetRacc.y, targetRacc.z)
 		elseif targetAcc:length() > minPosForce then
 			velocityVE.addVelocity(targetAcc.x, targetAcc.y, targetAcc.z)
 		end
-	end
+	--end
 
-	lastAcc = targetAcc
-	lastRacc = targetRacc
+        lastAcc  = targetAcc
+        lastRacc = targetRacc
+
+    end
+  end
 end
 
 
@@ -376,7 +384,7 @@ local function getVehicleRotation()
 	-- this attempts to send a full table of nan if there are several rapid instability causing VE lua to break after next vehicle reload, seems to be caused by a game issue
 	local rot = quatFromDir(-vec3(obj:getDirectionVector()), vec3(obj:getDirectionVectorUp()))
 	local rvel = smoothRvel:rotated(rot)
-	
+
 	local cog = velocityVE.cogRel:rotated(rot)
 	local pos = vec3(obj:getPosition()) + cog
 	local vel = smoothVel + cog:cross(rvel)
@@ -437,7 +445,7 @@ M.onReset            = onReset
 M.onInit             = onInit
 M.onExtensionLoaded  = onInit
 M.onPhysicsStep      = update
-M.updateGFX          = updateGFX
+--M.updateGFX          = updateGFX
 M.getVehicleRotation = getVehicleRotation
 M.setVehiclePosRot   = setVehiclePosRot
 M.setPing            = setPing
